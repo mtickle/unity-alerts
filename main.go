@@ -131,7 +131,7 @@ func sendNcdotAlert(webhookURL, mapsAPIKey string, incident UnifiedIncident) (st
 	}
 
 	embed := DiscordEmbed{
-		Title:     "🚨 NC DOT - New Vehicle Crash 🚨",
+		Title:     "🚨 NC DOT - New Incident",
 		Color:     color,
 		Fields:    fields,
 		Footer:    EmbedFooter{Text: "Source: NC DOT API"},
@@ -168,7 +168,7 @@ func sendRweccAlert(webhookURL, mapsAPIKey string, incident UnifiedIncident) (st
 	}
 
 	embed := DiscordEmbed{
-		Title:     "🔵 " + rweccDetails.Problem + " 🔵",
+		Title:     "🔵 " + rweccDetails.Problem,
 		Color:     color,
 		Fields:    fields,
 		Footer:    EmbedFooter{Text: "Source: Raleigh-Wake ECC"},
@@ -220,7 +220,7 @@ func postToWebhook(webhookURL string, payload DiscordWebhookPayload) (string, er
 // updateDiscordAlert edits an existing Discord message to show it's cleared.
 func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) error {
 	embed := DiscordEmbed{
-		Title: "✅ Incident Cleared ✅",
+		Title: "✅ Incident Cleared",
 		Color: 3066993, // Green
 		Fields: []EmbedField{
 			{Name: "Source", Value: incident.Source, Inline: false},
