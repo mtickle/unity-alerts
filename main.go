@@ -212,15 +212,12 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		Severity int    `json:"severity"`
 	}
 	var weatherDetails *struct {
-		Temp      float64 `json:"temp"`
-		WindSpeed float64 `json:"wind_speed"`
-		Weather   []struct {
-			Main string `json:"main"`
-			Icon string `json:"icon"`
-		} `json:"weather"`
+		Temperature   int    `json:"temperature"`
+		WindSpeed     string `json:"windSpeed"`
+		ShortForecast string `json:"shortForecast"`
+		Icon          string `json:"icon"`
 	}
 
-	// First, try to parse the new, nested format.
 	var detailsMap map[string]json.RawMessage
 	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
 		if rawJSON, ok := detailsMap["raw_incident"]; ok {
@@ -230,21 +227,13 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 			json.Unmarshal(weatherJSON, &weatherDetails)
 		}
 	} else {
-		// Fallback to parsing the old, flat format if the new one fails.
 		log.Printf("INFO: Could not parse as new format, falling back to old format for NCDOT incident.")
 		json.Unmarshal(incident.Details, &rawIncident)
 	}
 
 	var color int
 	switch rawIncident.Severity {
-	case 1:
-		color = 3066993
-	case 2:
-		color = 16776960
-	case 3:
-		color = 15158332
-	default:
-		color = 2105893
+	case 1: color = 3066993; case 2: color = 16776960; case 3: color = 15158332; default: color = 2105893
 	}
 
 	fields := []EmbedField{
@@ -253,10 +242,9 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		{Name: "Location", Value: rawIncident.Location, Inline: false},
 		{Name: "Severity", Value: strconv.Itoa(rawIncident.Severity), Inline: false},
 	}
-
-	if weatherDetails != nil && len(weatherDetails.Weather) > 0 {
-		weatherDesc := weatherDetails.Weather[0].Main
-		weatherValue := fmt.Sprintf("%s\nTemp: %.1f°F\nWind: %.1f mph", weatherDesc, weatherDetails.Temp, weatherDetails.WindSpeed)
+	
+	if weatherDetails != nil {
+		weatherValue := fmt.Sprintf("%s\nTemp: %d°F\nWind: %s", weatherDetails.ShortForecast, weatherDetails.Temperature, weatherDetails.WindSpeed)
 		fields = append(fields, EmbedField{Name: "Weather Conditions", Value: weatherValue, Inline: false})
 	}
 
@@ -269,7 +257,7 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	}
 
 	embed := DiscordEmbed{
-		Title: "🚨 NC DOT - New Vehicle Crash 🚨", Color: color, Fields: fields,
+		Title: "🚨 NC DOT - Incident Alert 🚨", Color: color, Fields: fields,
 		Footer: EmbedFooter{Text: "Source: NC DOT API"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
 
@@ -298,26 +286,18 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		ShortForecast string `json:"shortForecast"`
 		Icon          string `json:"icon"`
 	}
-
-	// Try to parse the new, nested format first.
+	
 	var detailsMap map[string]json.RawMessage
 	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
 		if rawJSON, ok := detailsMap["raw_incident"]; ok {
-			if err := json.Unmarshal(rawJSON, &rawIncident); err != nil {
-				log.Printf("ERROR: Failed to unmarshal nested RWECC raw_incident: %v", err)
-			}
+			json.Unmarshal(rawJSON, &rawIncident)
 		}
 		if weatherJSON, ok := detailsMap["weather"]; ok && string(weatherJSON) != "null" {
-			if err := json.Unmarshal(weatherJSON, &weatherDetails); err != nil {
-				log.Printf("WARNING: Failed to unmarshal RWECC weather: %v", err)
-			}
+			json.Unmarshal(weatherJSON, &weatherDetails)
 		}
 	} else {
-		// Fallback to parsing the old, flat format.
 		log.Printf("INFO: Could not parse as new format, falling back to old format for RWECC incident.")
-		if fallbackErr := json.Unmarshal(incident.Details, &rawIncident); fallbackErr != nil {
-			log.Printf("ERROR: Failed to unmarshal RWECC details in both new and old formats: %v", fallbackErr)
-		}
+		json.Unmarshal(incident.Details, &rawIncident)
 	}
 
 	fields := []EmbedField{
@@ -343,8 +323,11 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		Footer: EmbedFooter{Text: "Source: Raleigh-Wake ECC"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
 
-	if weatherDetails != nil && weatherDetails.Icon != "" {
-		embed.Thumbnail = EmbedThumbnail{URL: weatherDetails.Icon}
+	// Always prioritize the Google Maps image for the thumbnail.
+	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
+		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
+			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
+		embed.Thumbnail = EmbedThumbnail{URL: mapURL}
 	}
 
 	if attachmentName != "" {
@@ -354,6 +337,7 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
 }
 
+
 // postMultipartToWebhook sends a message that may include a file attachment.
 func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, attachmentPath string) (string, error) {
 	webhookURL += "?wait=true"
@@ -362,41 +346,27 @@ func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, at
 	writer := multipart.NewWriter(body)
 
 	jsonPart, err := writer.CreateFormField("payload_json")
-	if err != nil {
-		return "", err
-	}
-	if err := json.NewEncoder(jsonPart).Encode(payload); err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
+	if err := json.NewEncoder(jsonPart).Encode(payload); err != nil { return "", err }
 
 	if attachmentPath != "" {
 		file, err := os.Open(attachmentPath)
-		if err != nil {
-			return "", err
-		}
+		if err != nil { return "", err }
 		defer file.Close()
 		part, err := writer.CreateFormFile("files[0]", filepath.Base(attachmentPath))
-		if err != nil {
-			return "", err
-		}
-		if _, err = io.Copy(part, file); err != nil {
-			return "", err
-		}
+		if err != nil { return "", err }
+		if _, err = io.Copy(part, file); err != nil { return "", err }
 	}
 
 	writer.Close()
 
 	req, err := http.NewRequest("POST", webhookURL, body)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
@@ -404,15 +374,11 @@ func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, at
 		return "", fmt.Errorf("discord returned non-2xx status: %s. Body: %s", resp.Status, string(respBody))
 	}
 
-	var message struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
-		return "", err
-	}
-
+	var message struct{ ID string `json:"id"` }
+	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil { return "", err }
 	return message.ID, nil
 }
+
 
 // updateDiscordAlert edits an existing Discord message to show it's cleared.
 func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) error {
@@ -578,3 +544,4 @@ func main() {
 	log.Printf("Processed %d cleared alerts.", clearedIncidentsUpdated)
 	log.Println("Run complete.")
 }
+
