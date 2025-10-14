@@ -271,25 +271,6 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		log.Printf("INFO: Could not parse as new format, falling back to old format for NCDOT incident.")
 		json.Unmarshal(incident.Details, &rawIncident)
 	}
-	var weatherDetails *struct {
-		Temperature   int    `json:"temperature"`
-		WindSpeed     string `json:"windSpeed"`
-		ShortForecast string `json:"shortForecast"`
-		Icon          string `json:"icon"`
-	}
-
-	var detailsMap map[string]json.RawMessage
-	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
-		if rawJSON, ok := detailsMap["raw_incident"]; ok {
-			json.Unmarshal(rawJSON, &rawIncident)
-		}
-		if weatherJSON, ok := detailsMap["weather"]; ok && string(weatherJSON) != "null" {
-			json.Unmarshal(weatherJSON, &weatherDetails)
-		}
-	} else {
-		log.Printf("INFO: Could not parse as new format, falling back to old format for NCDOT incident.")
-		json.Unmarshal(incident.Details, &rawIncident)
-	}
 
 	var color int
 	switch rawIncident.Severity {
@@ -373,14 +354,7 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	if weatherDetails != nil {
 		weatherValue := fmt.Sprintf("%s\nTemp: %d°F\nWind: %s", weatherDetails.ShortForecast, weatherDetails.Temperature, weatherDetails.WindSpeed)
 		fields = append(fields, EmbedField{Name: "Weather Conditions", Value: weatherValue, Inline: false})
-		{Name: "Jurisdiction", Value: rawIncident.Jurisdiction, Inline: false},
 	}
-
-	if weatherDetails != nil {
-		weatherValue := fmt.Sprintf("%s\nTemp: %d°F\nWind: %s", weatherDetails.ShortForecast, weatherDetails.Temperature, weatherDetails.WindSpeed)
-		fields = append(fields, EmbedField{Name: "Weather Conditions", Value: weatherValue, Inline: false})
-	}
-
 
 	if len(nearbyCameras) > 1 {
 		var cameraLinks []string
@@ -392,11 +366,9 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 
 	embed := DiscordEmbed{
 		Title: "🔵 " + rawIncident.Problem + " 🔵", Color: 3447003, Fields: fields,
-		Title: "🔵 " + rawIncident.Problem + " 🔵", Color: 3447003, Fields: fields,
 		Footer: EmbedFooter{Text: "Source: Raleigh-Wake ECC"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
 
-	// Always prioritize the Google Maps image for the thumbnail.
 	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
 		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
 			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
@@ -470,13 +442,10 @@ func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) 
 	embed := DiscordEmbed{
 		Title: "✅ Incident Cleared ✅",
 		Color: 3066993, // Green
-		Title: "✅ Incident Cleared ✅",
-		Color: 3066993, // Green
 		Fields: []EmbedField{
 			{Name: "Source", Value: incident.Source, Inline: false},
 			{Name: "Address", Value: incident.Address, Inline: false},
 		},
-		Footer:    EmbedFooter{Text: "Incident no longer in active feed"},
 		Footer:    EmbedFooter{Text: "Incident no longer in active feed"},
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -485,23 +454,14 @@ func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) 
 	if err != nil {
 		return fmt.Errorf("error creating update JSON payload: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("error creating update JSON payload: %w", err)
-	}
 	updateURL := fmt.Sprintf("%s/messages/%s", webhookURL, messageID)
 	req, err := http.NewRequest("PATCH", updateURL, bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("error creating PATCH request: %w", err)
-	}
 	if err != nil {
 		return fmt.Errorf("error creating PATCH request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("error sending PATCH request: %w", err)
-	}
 	if err != nil {
 		return fmt.Errorf("error sending PATCH request: %w", err)
 	}
@@ -521,13 +481,6 @@ func main() {
 		}
 	} else {
 		log.Println("Loaded configuration from .env")
-		if err := godotenv.Load(".env.dev"); err != nil {
-			log.Println("Note: No .env or .env.dev file found, reading from system environment")
-		} else {
-			log.Println("Loaded configuration from .env.dev")
-		}
-	} else {
-		log.Println("Loaded configuration from .env")
 	}
 
 	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
@@ -537,13 +490,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error opening database: %s", err)
 	}
-	if err != nil {
-		log.Fatalf("Error opening database: %s", err)
-	}
 	defer db.Close()
-	if err := db.Ping(); err != nil {
-		log.Fatalf("Error connecting to database: %s", err)
-	}
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Error connecting to database: %s", err)
 	}
@@ -563,31 +510,13 @@ func main() {
 	if webhookURL == "" {
 		log.Fatalln("Error: DISCORD_HOOK must be set")
 	}
-
-	notifyDiscord := os.Getenv("NOTIFY_DISCORD")
-
-	stateFilename := os.Getenv("STATE_FILENAME")
-	if stateFilename == "" {
-		stateFilename = "sent_unified_alerts.json"
-	}
-	log.Printf("Using state file: %s", stateFilename)
-
-	if webhookURL == "" {
-		log.Fatalln("Error: DISCORD_HOOK must be set")
-	}
 	sentIDs, err := loadSentIncidents(stateFilename)
-	if err != nil {
-		log.Fatalf("Error loading sent incidents: %s", err)
-	}
 	if err != nil {
 		log.Fatalf("Error loading sent incidents: %s", err)
 	}
 
 	// Step 1: Process New Incidents
 	rows, err := db.Query("SELECT id, source, source_id, event_type, address, latitude, longitude, timestamp, details FROM unified_incidents WHERE status = 'active'")
-	if err != nil {
-		log.Fatalf("Error querying for new incidents: %v", err)
-	}
 	if err != nil {
 		log.Fatalf("Error querying for new incidents: %v", err)
 	}
@@ -620,34 +549,12 @@ func main() {
 			}
 
 			log.Println("Sending alert to Discord...")
-			log.Printf("Found new unified incident from %s (ID: %s).", i.Source, i.SourceID)
-
-			if notifyDiscord == "0" {
-				log.Println("--- DEBUG MODE: NOTIFY_DISCORD=0 ---")
-				log.Println("Data that would be sent:")
-
-				var prettyJSON bytes.Buffer
-				if err := json.Indent(&prettyJSON, i.Details, "", "  "); err != nil {
-					log.Printf("Error formatting JSON for debug: %v", err)
-				} else {
-					log.Println(prettyJSON.String())
-				}
-
-				sentIDs[i.ID] = true
-				newIncidentsFound++
-				continue
-			}
-
-			log.Println("Sending alert to Discord...")
 			messageID, err := sendDiscordAlert(db, webhookURL, mapsAPIKey, i)
 			if err != nil {
 				log.Printf("Error sending Discord alert: %v", err)
 				continue
 			}
 			_, err = db.Exec("UPDATE unified_incidents SET discord_message_id = $1 WHERE id = $2", messageID, i.ID)
-			if err != nil {
-				log.Printf("Error saving discord_message_id: %v", err)
-			}
 			if err != nil {
 				log.Printf("Error saving discord_message_id: %v", err)
 			}
@@ -660,17 +567,11 @@ func main() {
 		if err := saveSentIncidents(stateFilename, sentIDs); err != nil {
 			log.Printf("Error saving sent incidents file: %s", err)
 		}
-		if err := saveSentIncidents(stateFilename, sentIDs); err != nil {
-			log.Printf("Error saving sent incidents file: %s", err)
-		}
 	}
 	log.Printf("Processed %d new alerts.", newIncidentsFound)
 
 	// Step 2: Process Cleared Incidents
 	clearedRows, err := db.Query("SELECT id, source, address, discord_message_id FROM unified_incidents WHERE status = 'cleared' AND discord_message_id IS NOT NULL")
-	if err != nil {
-		log.Fatalf("Error querying for cleared incidents: %v", err)
-	}
 	if err != nil {
 		log.Fatalf("Error querying for cleared incidents: %v", err)
 	}
@@ -690,9 +591,6 @@ func main() {
 			continue
 		}
 		_, err = db.Exec("UPDATE unified_incidents SET discord_message_id = NULL WHERE id = $1", i.ID)
-		if err != nil {
-			log.Printf("Error nullifying discord_message_id: %v", err)
-		}
 		if err != nil {
 			log.Printf("Error nullifying discord_message_id: %v", err)
 		}
