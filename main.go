@@ -499,11 +499,11 @@ func main() {
 
 	notifyDiscord := os.Getenv("NOTIFY_DISCORD")
 
-	stateFilename := os.Getenv("STATE_FILENAME")
-	if stateFilename == "" {
-		stateFilename = "sent_unified_alerts.json"
-	}
-	log.Printf("Using state file: %s", stateFilename)
+	// stateFilename := os.Getenv("STATE_FILENAME")
+	// if stateFilename == "" {
+	// 	stateFilename = "sent_unified_alerts.json"
+	// }
+	// log.Printf("Using state file: %s", stateFilename)
 
 	if webhookURL == "" {
 		log.Fatalln("Error: DISCORD_HOOK must be set")
