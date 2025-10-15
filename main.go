@@ -19,7 +19,7 @@ import (
 	_ "github.com/lib/pq"
 )
 
-// ... (Struct definitions are unchanged) ...
+// UnifiedIncident matches the structure of our database table.
 type UnifiedIncident struct {
 	ID               int
 	Source           string
@@ -29,18 +29,23 @@ type UnifiedIncident struct {
 	Latitude         sql.NullFloat64
 	Longitude        sql.NullFloat64
 	Timestamp        time.Time
-	Details          []byte
+	Details          []byte // Raw JSONB from the database
 	DiscordMessageID sql.NullString
 }
+
+// Camera holds the info for a nearby traffic camera.
 type Camera struct {
 	Name     string
 	ImageURL string
 }
+
+// Structs for creating a rich Discord Embed message with attachments.
 type DiscordWebhookPayload struct {
 	Username  string         `json:"username"`
 	AvatarURL string         `json:"avatar_url,omitempty"`
 	Embeds    []DiscordEmbed `json:"embeds"`
 }
+
 type DiscordEmbed struct {
 	Title     string         `json:"title,omitempty"`
 	Color     int            `json:"color"`
@@ -50,17 +55,21 @@ type DiscordEmbed struct {
 	Thumbnail EmbedThumbnail `json:"thumbnail,omitempty"`
 	Image     EmbedImage     `json:"image,omitempty"`
 }
+
 type EmbedThumbnail struct {
 	URL string `json:"url"`
 }
+
 type EmbedImage struct {
 	URL string `json:"url"`
 }
+
 type EmbedField struct {
 	Name   string `json:"name"`
 	Value  string `json:"value"`
 	Inline bool   `json:"inline"`
 }
+
 type EmbedFooter struct {
 	Text string `json:"text"`
 }
@@ -73,29 +82,37 @@ func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, stri
 		return "", "", fmt.Errorf("failed to download image: %w", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != 200 {
 		return "", "", fmt.Errorf("received non-200 status code for image: %s", resp.Status)
 	}
+
 	fileName := fmt.Sprintf("incident_%d_cam_%s.jpg", incidentID, time.Now().Format("20060102150405"))
 	filePath := filepath.Join(os.TempDir(), fileName)
+
 	file, err := os.Create(filePath)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create temp file: %w", err)
 	}
 	defer file.Close()
+
 	_, err = io.Copy(file, resp.Body)
 	if err != nil {
 		os.Remove(filePath)
 		return "", "", fmt.Errorf("failed to save image to file: %w", err)
 	}
+
 	_, err = db.Exec("INSERT INTO camera_captures (incident_id, camera_name, file_path) VALUES ($1, $2, $3)",
 		incidentID, camera.Name, filePath)
 	if err != nil {
 		log.Printf("Warning: failed to log camera capture to DB: %v", err)
 	}
+
 	log.Printf("Successfully saved camera frame to %s", filePath)
 	return filePath, fileName, nil
 }
+
+// findNearbyCameras queries the database to find the closest cameras to a given point.
 func findNearbyCameras(db *sql.DB, lat, lon float64, limit int) ([]Camera, error) {
 	var cameras []Camera
 	query := `
@@ -109,6 +126,7 @@ func findNearbyCameras(db *sql.DB, lat, lon float64, limit int) ([]Camera, error
 		return nil, fmt.Errorf("error querying for nearby cameras: %w", err)
 	}
 	defer rows.Close()
+
 	for rows.Next() {
 		var cam Camera
 		if err := rows.Scan(&cam.Name, &cam.ImageURL); err != nil {
@@ -119,7 +137,7 @@ func findNearbyCameras(db *sql.DB, lat, lon float64, limit int) ([]Camera, error
 	return cameras, nil
 }
 
-// sendDiscordAlert has been updated to not capture images for ArcGIS incidents.
+// sendDiscordAlert is the main router for sending a new, enriched alert.
 func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident UnifiedIncident) (string, error) {
 	var payload DiscordWebhookPayload
 	var attachmentPath, attachmentName string
@@ -134,28 +152,7 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 				log.Printf("Could not fetch nearby cameras: %v", err)
 			}
 		}
-	// Only capture camera images for sources that are NOT ArcGIS_Police.
-	if incident.Source != "ArcGIS_Police" {
-		var nearbyCameras []Camera
-		if incident.Latitude.Valid && incident.Longitude.Valid {
-			var err error
-			nearbyCameras, err = findNearbyCameras(db, incident.Latitude.Float64, incident.Longitude.Float64, 3)
-			if err != nil {
-				log.Printf("Could not fetch nearby cameras: %v", err)
-			}
-		}
 
-		if len(nearbyCameras) > 0 {
-			var err error
-			attachmentPath, attachmentName, err = captureCameraImage(db, incident.ID, nearbyCameras[0])
-			if err != nil {
-				log.Printf("Failed to capture camera image: %v", err)
-				attachmentPath = ""
-			}
-		}
-		if attachmentPath != "" {
-			defer os.Remove(attachmentPath)
-		}
 		if len(nearbyCameras) > 0 {
 			var err error
 			attachmentPath, attachmentName, err = captureCameraImage(db, incident.ID, nearbyCameras[0])
@@ -182,62 +179,7 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 	return postMultipartToWebhook(webhookURL, payload, attachmentPath)
 }
 
-// buildArcGisPayload has been refactored for the new layout.
-func buildArcGisPayload(mapsAPIKey string, incident UnifiedIncident) DiscordWebhookPayload {
-	var rawIncident struct {
-		CaseNumber       string `json:"case_number"`
-		CrimeDescription string `json:"crime_description"`
-		Agency           string `json:"agency"`
-	}
-
-	// --- THE FIX: More robust parsing logic ---
-	log.Printf("DEBUG: Raw ArcGIS Details JSON received: %s", string(incident.Details))
-
-	// Try to parse the new, nested format first.
-	var detailsMap map[string]json.RawMessage
-	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
-		if rawJSON, ok := detailsMap["raw_incident"]; ok {
-			if err := json.Unmarshal(rawJSON, &rawIncident); err != nil {
-				log.Printf("ERROR: Failed to unmarshal nested ArcGIS raw_incident: %v", err)
-			}
-		}
-	} else {
-		// Fallback to parsing the old, flat format.
-		log.Printf("INFO: Could not parse as new format, falling back to old format for ArcGIS incident.")
-		if fallbackErr := json.Unmarshal(incident.Details, &rawIncident); fallbackErr != nil {
-			log.Printf("ERROR: Failed to unmarshal ArcGIS details in both new and old formats: %v", fallbackErr)
-		}
-	}
-
-	fields := []EmbedField{
-		{Name: "Address", Value: incident.Address, Inline: false},
-		{Name: "Agency", Value: rawIncident.Agency, Inline: false},
-	}
-
-	// Use the case number as a field if it's not a temporary one.
-	if !strings.HasPrefix(rawIncident.CaseNumber, "NO_CASE-") {
-		fields = append(fields, EmbedField{Name: "Case #", Value: rawIncident.CaseNumber, Inline: false})
-	}
-
-	embed := DiscordEmbed{
-		Title:     "🟣 " + rawIncident.CrimeDescription + " 🟣",
-		Color:     9807270, // Purple
-		Fields:    fields,
-		Footer:    EmbedFooter{Text: "Source: Police Incidents Feed"},
-		Timestamp: incident.Timestamp.Format(time.RFC3339),
-	}
-
-	// Generate a larger map and use it as the main image, not the thumbnail.
-	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
-		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=15&size=600x400&markers=color:purple%%7C%.6f,%.6f&key=%s",
-			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
-		embed.Image = EmbedImage{URL: mapURL}
-	}
-
-	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
-}
-
-// ... (The rest of the file, including buildNcdotPayload, buildRweccPayload, main(), etc., is unchanged) ...
+// buildNcdotPayload creates the multi-embed structure for an NC DOT alert.
 func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCameras []Camera, attachmentName string) DiscordWebhookPayload {
 	var rawIncident struct {
 		Reason   string `json:"reason"`
@@ -275,14 +217,6 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		color = 15158332
 	default:
 		color = 2105893
-	case 1:
-		color = 3066993
-	case 2:
-		color = 16776960
-	case 3:
-		color = 15158332
-	default:
-		color = 2105893
 	}
 
 	fields := []EmbedField{
@@ -291,7 +225,6 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		{Name: "Location", Value: rawIncident.Location, Inline: false},
 		{Name: "Severity", Value: strconv.Itoa(rawIncident.Severity), Inline: false},
 	}
-
 
 	if weatherDetails != nil {
 		weatherValue := fmt.Sprintf("%s\nTemp: %d°F\nWind: %s", weatherDetails.ShortForecast, weatherDetails.Temperature, weatherDetails.WindSpeed)
@@ -323,6 +256,8 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 
 	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
 }
+
+// buildRweccPayload creates the multi-embed structure for an RWECC alert.
 func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCameras []Camera, attachmentName string) DiscordWebhookPayload {
 	var rawIncident struct {
 		Problem      string `json:"problem"`
@@ -334,7 +269,6 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		ShortForecast string `json:"shortForecast"`
 		Icon          string `json:"icon"`
 	}
-
 
 	var detailsMap map[string]json.RawMessage
 	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
@@ -455,29 +389,14 @@ func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, at
 	if err := json.NewEncoder(jsonPart).Encode(payload); err != nil {
 		return "", err
 	}
-	if err != nil {
-		return "", err
-	}
-	if err := json.NewEncoder(jsonPart).Encode(payload); err != nil {
-		return "", err
-	}
 
 	if attachmentPath != "" {
 		file, err := os.Open(attachmentPath)
 		if err != nil {
 			return "", err
 		}
-		if err != nil {
-			return "", err
-		}
 		defer file.Close()
 		part, err := writer.CreateFormFile("files[0]", filepath.Base(attachmentPath))
-		if err != nil {
-			return "", err
-		}
-		if _, err = io.Copy(part, file); err != nil {
-			return "", err
-		}
 		if err != nil {
 			return "", err
 		}
@@ -492,16 +411,10 @@ func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, at
 	if err != nil {
 		return "", err
 	}
-	if err != nil {
-		return "", err
-	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
 	if err != nil {
 		return "", err
 	}
@@ -512,12 +425,6 @@ func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, at
 		return "", fmt.Errorf("discord returned non-2xx status: %s. Body: %s", resp.Status, string(respBody))
 	}
 
-	var message struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&message); err != nil {
-		return "", err
-	}
 	var message struct {
 		ID string `json:"id"`
 	}
@@ -562,6 +469,7 @@ func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) 
 	}
 	return nil
 }
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		if err := godotenv.Load(".env.dev"); err != nil {
