@@ -74,6 +74,18 @@ type EmbedFooter struct {
 	Text string `json:"text"`
 }
 
+// getWebhookForSource routes the incident to the correct Discord channel
+func getWebhookForSource(source string) string {
+	switch source {
+	case "NCDOT":
+		return os.Getenv("DISCORD_HOOK_NCDOT")
+	case "RWECC":
+		return os.Getenv("DISCORD_HOOK_RWECC")
+	default:
+		return "" // Return empty if no route exists
+	}
+}
+
 // captureCameraImage downloads a camera image and saves it to a temporary file.
 func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, string, error) {
 	log.Printf("Capturing image from camera: %s", camera.Name)
@@ -142,38 +154,33 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 	var payload DiscordWebhookPayload
 	var attachmentPath, attachmentName string
 
-	// Only capture camera images for sources that are NOT ArcGIS_Police.
-	if incident.Source != "ArcGIS_Police" {
-		var nearbyCameras []Camera
-		if incident.Latitude.Valid && incident.Longitude.Valid {
-			var err error
-			nearbyCameras, err = findNearbyCameras(db, incident.Latitude.Float64, incident.Longitude.Float64, 3)
-			if err != nil {
-				log.Printf("Could not fetch nearby cameras: %v", err)
-			}
+	var nearbyCameras []Camera
+	if incident.Latitude.Valid && incident.Longitude.Valid {
+		var err error
+		nearbyCameras, err = findNearbyCameras(db, incident.Latitude.Float64, incident.Longitude.Float64, 3)
+		if err != nil {
+			log.Printf("Could not fetch nearby cameras: %v", err)
 		}
+	}
 
-		if len(nearbyCameras) > 0 {
-			var err error
-			attachmentPath, attachmentName, err = captureCameraImage(db, incident.ID, nearbyCameras[0])
-			if err != nil {
-				log.Printf("Failed to capture camera image: %v", err)
-				attachmentPath = ""
-			}
+	if len(nearbyCameras) > 0 {
+		var err error
+		attachmentPath, attachmentName, err = captureCameraImage(db, incident.ID, nearbyCameras[0])
+		if err != nil {
+			log.Printf("Failed to capture camera image: %v", err)
+			attachmentPath = ""
 		}
-		if attachmentPath != "" {
-			defer os.Remove(attachmentPath)
-		}
+	}
+	if attachmentPath != "" {
+		defer os.Remove(attachmentPath)
+	}
 
-		if incident.Source == "NCDOT" {
-			payload = buildNcdotPayload(mapsAPIKey, incident, nearbyCameras, attachmentName)
-		} else if incident.Source == "RWECC" {
-			payload = buildRweccPayload(mapsAPIKey, incident, nearbyCameras, attachmentName)
-		} else {
-			return "", fmt.Errorf("unknown incident source: %s", incident.Source)
-		}
+	if incident.Source == "NCDOT" {
+		payload = buildNcdotPayload(mapsAPIKey, incident, nearbyCameras, attachmentName)
+	} else if incident.Source == "RWECC" {
+		payload = buildRweccPayload(mapsAPIKey, incident, nearbyCameras, attachmentName)
 	} else {
-		payload = buildArcGisPayload(mapsAPIKey, incident)
+		return "", fmt.Errorf("unknown incident source: %s", incident.Source)
 	}
 
 	return postMultipartToWebhook(webhookURL, payload, attachmentPath)
@@ -319,62 +326,6 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
 }
 
-// buildArcGisPayload creates the multi-embed structure for an ArcGIS Police incident.
-func buildArcGisPayload(mapsAPIKey string, incident UnifiedIncident) DiscordWebhookPayload {
-	var rawIncident struct {
-		CaseNumber       string `json:"case_number"`
-		CrimeDescription string `json:"crime_description"`
-		Agency           string `json:"agency"`
-	}
-
-	log.Printf("DEBUG: Raw ArcGIS Details JSON received: %s", string(incident.Details))
-
-	var detailsMap map[string]json.RawMessage
-	if err := json.Unmarshal(incident.Details, &detailsMap); err == nil {
-		if rawJSON, ok := detailsMap["raw_incident"]; ok {
-			if err := json.Unmarshal(rawJSON, &rawIncident); err != nil {
-				log.Printf("ERROR: Failed to unmarshal nested ArcGIS raw_incident: %v", err)
-			}
-		}
-	} else {
-		log.Printf("INFO: Could not parse as new format, falling back to old format for ArcGIS incident.")
-		if fallbackErr := json.Unmarshal(incident.Details, &rawIncident); fallbackErr != nil {
-			log.Printf("ERROR: Failed to unmarshal ArcGIS details in both new and old formats: %v", fallbackErr)
-		}
-	}
-
-	loc, _ := time.LoadLocation("America/New_York")
-	localTime := incident.Timestamp.In(loc)
-	formattedTime := localTime.Format("Mon, Jan 2, 3:04 PM")
-
-	fields := []EmbedField{
-		{Name: "Address", Value: incident.Address, Inline: false},
-		{Name: "Agency", Value: rawIncident.Agency, Inline: false},
-	}
-
-	if !strings.HasPrefix(rawIncident.CaseNumber, "NO_CASE-") {
-		fields = append(fields, EmbedField{Name: "Case #", Value: rawIncident.CaseNumber, Inline: false})
-	}
-
-	fields = append(fields, EmbedField{Name: "Reported", Value: formattedTime, Inline: false})
-
-	embed := DiscordEmbed{
-		Title:     "🟣 " + rawIncident.CrimeDescription + " 🟣",
-		Color:     9807270, // Purple
-		Fields:    fields,
-		Footer:    EmbedFooter{Text: "Source: Police Incidents Feed"},
-		Timestamp: incident.Timestamp.Format(time.RFC3339),
-	}
-
-	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
-		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=15&size=600x400&markers=color:purple%%7C%.6f,%.6f&key=%s",
-			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
-		embed.Image = EmbedImage{URL: mapURL}
-	}
-
-	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
-}
-
 // postMultipartToWebhook sends a message that may include a file attachment.
 func postMultipartToWebhook(webhookURL string, payload DiscordWebhookPayload, attachmentPath string) (string, error) {
 	webhookURL += "?wait=true"
@@ -494,23 +445,15 @@ func main() {
 	}
 	log.Println("Successfully connected to the database.")
 
-	webhookURL := os.Getenv("DISCORD_HOOK")
 	mapsAPIKey := os.Getenv("GOOGLE_MAPS_API_KEY")
-
 	notifyDiscord := os.Getenv("NOTIFY_DISCORD")
 
-	// stateFilename := os.Getenv("STATE_FILENAME")
-	// if stateFilename == "" {
-	// 	stateFilename = "sent_unified_alerts.json"
-	// }
-	// log.Printf("Using state file: %s", stateFilename)
-
-	if webhookURL == "" {
-		log.Fatalln("Error: DISCORD_HOOK must be set")
+	if os.Getenv("DISCORD_HOOK_NCDOT") == "" && os.Getenv("DISCORD_HOOK_RWECC") == "" {
+		log.Println("Warning: No Discord webhooks (NCDOT or RWECC) are configured in the environment.")
 	}
 
 	// Step 1: Process New Incidents
-	rows, err := db.Query("SELECT id, source, source_id, event_type, address, latitude, longitude, timestamp, details FROM unified_incidents WHERE status = 'active' AND discord_message_id IS NULL")
+	rows, err := db.Query("SELECT id, source, source_id, event_type, address, latitude, longitude, timestamp, details FROM unified_incidents WHERE status = 'active' AND discord_message_id IS NULL AND source != 'ArcGIS_Police'")
 	if err != nil {
 		log.Fatalf("Error querying for new incidents: %v", err)
 	}
@@ -526,6 +469,12 @@ func main() {
 
 		log.Printf("Found new unified incident from %s (ID: %s).", i.Source, i.SourceID)
 
+		targetWebhook := getWebhookForSource(i.Source)
+		if targetWebhook == "" {
+			log.Printf("No webhook configured for source %s, skipping", i.Source)
+			continue
+		}
+
 		if notifyDiscord == "0" {
 			log.Println("--- DEBUG MODE: NOTIFY_DISCORD=0 ---")
 			var prettyJSON bytes.Buffer
@@ -538,7 +487,7 @@ func main() {
 		}
 
 		log.Println("Sending alert to Discord...")
-		messageID, err := sendDiscordAlert(db, webhookURL, mapsAPIKey, i)
+		messageID, err := sendDiscordAlert(db, targetWebhook, mapsAPIKey, i)
 		if err != nil {
 			log.Printf("Error sending Discord alert: %v", err)
 			continue
@@ -555,7 +504,7 @@ func main() {
 	log.Printf("Processed %d new alerts.", newIncidentsFound)
 
 	// Step 2: Process Cleared Incidents
-	clearedRows, err := db.Query("SELECT id, source, address, discord_message_id FROM unified_incidents WHERE status = 'cleared' AND discord_message_id IS NOT NULL")
+	clearedRows, err := db.Query("SELECT id, source, address, discord_message_id FROM unified_incidents WHERE status = 'cleared' AND discord_message_id IS NOT NULL AND source != 'ArcGIS_Police'")
 	if err != nil {
 		log.Fatalf("Error querying for cleared incidents: %v", err)
 	}
@@ -568,12 +517,20 @@ func main() {
 			log.Printf("Error scanning cleared incident: %v", err)
 			continue
 		}
+
+		targetWebhook := getWebhookForSource(i.Source)
+		if targetWebhook == "" {
+			log.Printf("No webhook configured for source %s, skipping update", i.Source)
+			continue
+		}
+
 		log.Printf("Found cleared incident from %s (ID: %d). Updating message.", i.Source, i.ID)
-		err := updateDiscordAlert(webhookURL, i.DiscordMessageID.String, i)
+		err := updateDiscordAlert(targetWebhook, i.DiscordMessageID.String, i)
 		if err != nil {
 			log.Printf("Error updating Discord alert: %v", err)
 			continue
 		}
+
 		_, err = db.Exec("UPDATE unified_incidents SET discord_message_id = NULL WHERE id = $1", i.ID)
 		if err != nil {
 			log.Printf("Error nullifying discord_message_id: %v", err)
