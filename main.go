@@ -41,19 +41,25 @@ type Camera struct {
 
 // Structs for creating a rich Discord Embed message with attachments.
 type DiscordWebhookPayload struct {
-	Username  string         `json:"username"`
-	AvatarURL string         `json:"avatar_url,omitempty"`
-	Embeds    []DiscordEmbed `json:"embeds"`
+	Username    string              `json:"username"`
+	AvatarURL   string              `json:"avatar_url,omitempty"`
+	Embeds      []DiscordEmbed      `json:"embeds"`
+	Attachments []DiscordAttachment `json:"attachments,omitempty"`
+}
+
+type DiscordAttachment struct {
+	ID       int    `json:"id"`
+	Filename string `json:"filename"`
 }
 
 type DiscordEmbed struct {
-	Title     string         `json:"title,omitempty"`
-	Color     int            `json:"color"`
-	Fields    []EmbedField   `json:"fields,omitempty"`
-	Footer    EmbedFooter    `json:"footer,omitempty"`
-	Timestamp string         `json:"timestamp,omitempty"`
-	Thumbnail EmbedThumbnail `json:"thumbnail,omitempty"`
-	Image     EmbedImage     `json:"image,omitempty"`
+	Title     string          `json:"title,omitempty"`
+	Color     int             `json:"color"`
+	Fields    []EmbedField    `json:"fields,omitempty"`
+	Footer    EmbedFooter     `json:"footer,omitempty"`
+	Timestamp string          `json:"timestamp,omitempty"`
+	Thumbnail *EmbedThumbnail `json:"thumbnail,omitempty"`
+	Image     *EmbedImage     `json:"image,omitempty"`
 }
 
 type EmbedThumbnail struct {
@@ -87,9 +93,20 @@ func getWebhookForSource(source string) string {
 }
 
 // captureCameraImage downloads a camera image and saves it to a temporary file.
+// captureCameraImage downloads a camera image and saves it to a temporary file.
 func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, string, error) {
 	log.Printf("Capturing image from camera: %s", camera.Name)
-	resp, err := http.Get(camera.ImageURL)
+
+	req, err := http.NewRequest("GET", camera.ImageURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Spoof a standard web browser to bypass the camera server's anti-scraping block
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to download image: %w", err)
 	}
@@ -100,7 +117,7 @@ func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, stri
 	}
 
 	fileName := fmt.Sprintf("incident_%d_cam_%s.jpg", incidentID, time.Now().Format("20060102150405"))
-	filePath := filepath.Join(os.TempDir(), fileName)
+	filePath := fileName // Keep local for testing, or revert to filepath.Join(os.TempDir(), fileName)
 
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -172,7 +189,7 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 		}
 	}
 	if attachmentPath != "" {
-		defer os.Remove(attachmentPath)
+		//defer os.Remove(attachmentPath)
 	}
 
 	if incident.Source == "NCDOT" {
@@ -181,6 +198,15 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 		payload = buildRweccPayload(mapsAPIKey, incident, nearbyCameras, attachmentName)
 	} else {
 		return "", fmt.Errorf("unknown incident source: %s", incident.Source)
+	}
+
+	if attachmentName != "" {
+		payload.Attachments = []DiscordAttachment{
+			{
+				ID:       0,
+				Filename: attachmentName,
+			},
+		}
 	}
 
 	return postMultipartToWebhook(webhookURL, payload, attachmentPath)
@@ -251,14 +277,15 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		Footer: EmbedFooter{Text: "Source: NC DOT API"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
 
+	log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
 	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
 		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
 			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
-		embed.Thumbnail = EmbedThumbnail{URL: mapURL}
+		embed.Thumbnail = &EmbedThumbnail{URL: mapURL}
 	}
 
 	if attachmentName != "" {
-		embed.Image = EmbedImage{URL: "attachment://" + attachmentName}
+		embed.Image = &EmbedImage{URL: "attachment://" + attachmentName}
 	}
 
 	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
@@ -312,15 +339,16 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 		Title: "🔵 " + rawIncident.Problem + " 🔵", Color: 3447003, Fields: fields,
 		Footer: EmbedFooter{Text: "Source: Raleigh-Wake ECC"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
+	log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
 
 	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
 		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
 			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
-		embed.Thumbnail = EmbedThumbnail{URL: mapURL}
+		embed.Thumbnail = &EmbedThumbnail{URL: mapURL}
 	}
 
 	if attachmentName != "" {
-		embed.Image = EmbedImage{URL: "attachment://" + attachmentName}
+		embed.Image = &EmbedImage{URL: "attachment://" + attachmentName}
 	}
 
 	return DiscordWebhookPayload{Username: "Unified Alert Bot", Embeds: []DiscordEmbed{embed}}
