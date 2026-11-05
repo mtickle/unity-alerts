@@ -95,7 +95,7 @@ func getWebhookForSource(source string) string {
 // captureCameraImage downloads a camera image and saves it to a temporary file.
 // captureCameraImage downloads a camera image and saves it to a temporary file.
 func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, string, error) {
-	log.Printf("Capturing image from camera: %s", camera.Name)
+	//log.Printf("Capturing image from camera: %s", camera.Name)
 
 	req, err := http.NewRequest("GET", camera.ImageURL, nil)
 	if err != nil {
@@ -117,7 +117,7 @@ func captureCameraImage(db *sql.DB, incidentID int, camera Camera) (string, stri
 	}
 
 	fileName := fmt.Sprintf("incident_%d_cam_%s.jpg", incidentID, time.Now().Format("20060102150405"))
-	filePath := fileName // Keep local for testing, or revert to filepath.Join(os.TempDir(), fileName)
+	filePath := filepath.Join(os.TempDir(), fileName)
 
 	file, err := os.Create(filePath)
 	if err != nil {
@@ -189,7 +189,7 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 		}
 	}
 	if attachmentPath != "" {
-		//defer os.Remove(attachmentPath)
+		defer os.Remove(attachmentPath)
 	}
 
 	if incident.Source == "NCDOT" {
@@ -273,11 +273,11 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	}
 
 	embed := DiscordEmbed{
-		Title: "🚨 NC DOT - Incident Alert 🚨", Color: color, Fields: fields,
+		Title: "NC DOT - Incident Alert", Color: color, Fields: fields,
 		Footer: EmbedFooter{Text: "Source: NC DOT API"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
 
-	log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
+	//log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
 	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
 		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
 			incident.Latitude.Float64, incident.Longitude.Float64, incident.Latitude.Float64, incident.Longitude.Float64, mapsAPIKey)
@@ -336,10 +336,10 @@ func buildRweccPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	}
 
 	embed := DiscordEmbed{
-		Title: "🔵 " + rawIncident.Problem + " 🔵", Color: 3447003, Fields: fields,
+		Title: rawIncident.Problem, Color: 3447003, Fields: fields,
 		Footer: EmbedFooter{Text: "Source: Raleigh-Wake ECC"}, Timestamp: incident.Timestamp.Format(time.RFC3339),
 	}
-	log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
+	//log.Printf("DEBUG MAP BUILDER - ID: %d | API Key exists: %t | Lat Valid: %t (%.6f) | Lon Valid: %t (%.6f)", incident.ID, mapsAPIKey != "", incident.Latitude.Valid, incident.Latitude.Float64, incident.Longitude.Valid, incident.Longitude.Float64)
 
 	if mapsAPIKey != "" && incident.Latitude.Valid && incident.Longitude.Valid {
 		mapURL := fmt.Sprintf("https://maps.googleapis.com/maps/api/staticmap?center=%.6f,%.6f&zoom=14&size=300x300&markers=color:red%%7C%.6f,%.6f&key=%s",
