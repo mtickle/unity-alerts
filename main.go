@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -215,10 +214,11 @@ func sendDiscordAlert(db *sql.DB, webhookURL, mapsAPIKey string, incident Unifie
 // buildNcdotPayload creates the multi-embed structure for an NC DOT alert.
 func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCameras []Camera, attachmentName string) DiscordWebhookPayload {
 	var rawIncident struct {
-		Reason   string `json:"reason"`
-		Road     string `json:"road"`
-		Location string `json:"location"`
-		Severity int    `json:"severity"`
+		EventSubType      string `json:"EventSubType"`
+		RoadwayName       string `json:"RoadwayName"`
+		Description       string `json:"Description"`
+		Severity          string `json:"Severity"` // Severity is now a string!
+		DirectionOfTravel string `json:"DirectionOfTravel"`
 	}
 	var weatherDetails *struct {
 		Temperature   int    `json:"temperature"`
@@ -241,22 +241,22 @@ func buildNcdotPayload(mapsAPIKey string, incident UnifiedIncident, nearbyCamera
 	}
 
 	var color int
-	switch rawIncident.Severity {
-	case 1:
-		color = 3066993
-	case 2:
-		color = 16776960
-	case 3:
-		color = 15158332
+	switch strings.ToLower(rawIncident.Severity) {
+	case "high":
+		color = 15158332 // Red
+	case "medium":
+		color = 16776960 // Yellow
+	case "low":
+		color = 3066993 // Green
 	default:
-		color = 2105893
+		color = 2105893 // Gray fallback
 	}
 
 	fields := []EmbedField{
-		{Name: "Reason", Value: rawIncident.Reason, Inline: false},
-		{Name: "Road", Value: rawIncident.Road, Inline: false},
-		{Name: "Location", Value: rawIncident.Location, Inline: false},
-		{Name: "Severity", Value: strconv.Itoa(rawIncident.Severity), Inline: false},
+		{Name: "Type", Value: rawIncident.EventSubType, Inline: false},
+		{Name: "Road", Value: rawIncident.RoadwayName + " (" + rawIncident.DirectionOfTravel + ")", Inline: false},
+		{Name: "Description", Value: rawIncident.Description, Inline: false},
+		{Name: "Severity", Value: rawIncident.Severity, Inline: false},
 	}
 
 	if weatherDetails != nil {
