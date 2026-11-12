@@ -1,0 +1,19 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: unity-alerts-test
+  namespace: unity
+
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+
+      containers:
+      - name: unity-alerts
+        image: docker.io/library/unity-alerts:latest
+        imagePullPolicy: Never
+
+        envFrom:
+        - secretRef:
+            name: unity-alerts-env

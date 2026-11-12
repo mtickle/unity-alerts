@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
 
@@ -450,15 +449,6 @@ func updateDiscordAlert(webhookURL, messageID string, incident UnifiedIncident) 
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
-		if err := godotenv.Load(".env.dev"); err != nil {
-			log.Println("Note: No .env or .env.dev file found, reading from system environment")
-		} else {
-			log.Println("Loaded configuration from .env.dev")
-		}
-	} else {
-		log.Println("Loaded configuration from .env")
-	}
 
 	psqlInfo := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=require",
 		os.Getenv("DATABASE_HOST"), os.Getenv("DATABASE_PORT"), os.Getenv("DATABASE_USERNAME"),

@@ -1,0 +1,23 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: unity-alerts
+  namespace: unity
+
+spec:
+  schedule: "4-59/5 * * * *"
+
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+
+          containers:
+          - name: unity-alerts
+            image: docker.io/library/unity-alerts:latest
+            imagePullPolicy: Never
+
+            envFrom:
+            - secretRef:
+                name: unity-env
