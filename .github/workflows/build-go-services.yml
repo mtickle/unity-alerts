@@ -1,0 +1,98 @@
+name: Build & Push Unity Go Services (ARM64)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'unity-alerts/**'
+      - 'rwecc-ingestor-bot/**'
+      - 'ncdot-ingestor-bot/**'
+      - 'camera-ingestor-bot/**'
+      - '.github/workflows/build-go-services.yml'
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to build (or "all")'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - unity-alerts
+          - rwecc-ingestor-bot
+          - ncdot-ingestor-bot
+          - camera-ingestor-bot
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.set-matrix.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'push'
+        with:
+          filters: |
+            unity-alerts:
+              - 'unity-alerts/**'
+            rwecc-ingestor-bot:
+              - 'rwecc-ingestor-bot/**'
+            ncdot-ingestor-bot:
+              - 'ncdot-ingestor-bot/**'
+            camera-ingestor-bot:
+              - 'camera-ingestor-bot/**'
+
+      - id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.service }}" == "all" ]; then
+              echo 'services=["unity-alerts","rwecc-ingestor-bot","ncdot-ingestor-bot","camera-ingestor-bot"]' >> $GITHUB_OUTPUT
+            else
+              echo 'services=["${{ github.event.inputs.service }}"]' >> $GITHUB_OUTPUT
+            fi
+          else
+            echo 'services=${{ steps.filter.outputs.changes }}' >> $GITHUB_OUTPUT
+          fi
+
+  build-and-push:
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.services != '[]' && needs.detect-changes.outputs.services != '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push linux/arm64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.service }}
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mtickle/${{ matrix.service }}:latest
+            ghcr.io/mtickle/${{ matrix.service }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
