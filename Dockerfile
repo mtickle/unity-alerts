@@ -1,21 +1,16 @@
-FROM golang:1.22 AS builder
+FROM golang:1.27 AS builder
 
 WORKDIR /build
 
 COPY . .
 
 RUN go mod download
-RUN go build -o unity-alerts main.go
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o unity-alerts main.go
 
-FROM debian:bookworm-slim
 
-RUN apt-get update && \
-    apt-get install -y ca-certificates && \
-    update-ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+FROM scratch
 
-WORKDIR /app
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /build/unity-alerts /unity-alerts
 
-COPY --from=builder /build/unity-alerts .
-
-CMD ["./unity-alerts"]
+CMD ["/unity-alerts"]
